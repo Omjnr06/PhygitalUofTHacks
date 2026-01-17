@@ -1,50 +1,46 @@
 import cv2
-from collections import deque
+import torch
 from ultralytics import YOLO
-from ultralytics.utils.plotting import Annotator, colors
+from ultralytics.solutions import heatmap
 
-# 1. Using the standard model for now so it auto-downloads
-model = YOLO("yolo11n.pt") 
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model = YOLO("yolo11n.pt").to(device)
 
-# 2. Raw string for Windows paths
-video_path = r"assets\test_video_footage.mp4" 
+video_path = r"assets\test_video_footage.mp4"
 cap = cv2.VideoCapture(video_path)
 
-if not cap.isOpened():
-    print(f"Error: Could not open video at {video_path}")
-    exit()
+width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-track_history = {} 
+heatmap_obj = heatmap.Heatmap(
+    colormap=cv2.COLORMAP_JET,
+    view_img=False,
+    shape=(height, width),
+    names=model.names,
+)
+
+final_frame = None
 
 while cap.isOpened():
     success, frame = cap.read()
     if not success:
         break
 
-    # We tell YOLO to only track 'person' (class 0)
-    results = model.track(frame, persist=True, classes=[0]) 
+    input_frame = cv2.resize(frame, (640, 640))
+    results = model.track(input_frame, persist=True, classes=[0], verbose=False)
 
-    if results[0].boxes.id is not None:
-        boxes = results[0].boxes.xyxy.cpu().numpy()
-        track_ids = results[0].boxes.id.int().cpu().tolist()
+    frame = heatmap_obj.generate_heatmap(frame, tracks=results)
+    final_frame = frame # Update the reference for the final export
 
-        for box, track_id in zip(boxes, track_ids):
-            x1, y1, x2, y2 = box
-            center = (int((x1 + x2) / 2), int((y1 + y2) / 2))
-            radius = int((x2 - x1) / 4) # Smaller circle for testing
+    cv2.imshow("Heatmap", cv2.resize(frame, (1280, 720)))
 
-            cv2.circle(frame, center, radius, colors(track_id, True), 2)
-            
-            # Trajectory logic
-            track = track_history.get(track_id, deque(maxlen=30))
-            track.append(center)
-            track_history[track_id] = track
-            for i in range(1, len(track)):
-                cv2.line(frame, track[i-1], track[i], colors(track_id, True), 2)
-
-    cv2.imshow("Tracking Test", frame)
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
+
+# Export the last state of the heatmap
+if final_frame is not None:
+    cv2.imwrite("heatmap_output.png", final_frame)
+    print("Heatmap saved as heatmap_output.png")
 
 cap.release()
 cv2.destroyAllWindows()
