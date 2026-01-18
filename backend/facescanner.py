@@ -17,8 +17,8 @@ model = YOLO("yolo11n.pt").to(device)
 if device == "cuda": model.half() 
 
 # Setting variables for paths to where to find our video of contention and where to save heatmap images
-video_path = r"assets\test_video_footage.mp4"
-output_folder = r"assets\processed_heatmaps"
+video_path = r"backend\assets\test_video_footage.mp4"
+output_folder = r"backend\assets\processed_heatmaps"
 
 # We open a python window that will playback the video with the overlay
 win_name = "Phygital Person Scanner"
