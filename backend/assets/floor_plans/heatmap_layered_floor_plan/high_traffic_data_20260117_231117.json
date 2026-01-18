@@ -1,0 +1,14 @@
+{
+  "metadata": {
+    "timestamp": "20260117_231117",
+    "video_dimensions": {
+      "width": 1280,
+      "height": 704
+    },
+    "total_frames_processed": 450,
+    "heat_threshold_percentile": 90,
+    "heat_threshold_value": 1.0,
+    "total_high_traffic_regions": 0
+  },
+  "high_traffic_areas": []
+}

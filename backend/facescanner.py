@@ -3,6 +3,7 @@
 import cv2
 import torch
 import os
+import json
 import numpy as np
 from datetime import datetime
 from ultralytics import YOLO, solutions
@@ -18,17 +19,17 @@ model = YOLO("yolo11n.pt").to(device)
 if device == "cuda": model.half() 
 
 # Setting variables for paths to where to find our video of contention
-video_path = r"assets\test_video_footage.mp4"
+video_path = r"assets/test_video_footage.mp4"
 
 # --- OUTPUT ADDRESSES ---
 # Address 1: Standard heatmap of the actual store video
-store_output_folder = r"assets\processed_heatmaps"
+store_output_folder = r"assets/processed_heatmaps"
 
 # Address 2: Heatmap layered specifically on your floor plan
-floorplan_output_folder = r"assets\floor_plans\heatmap_layered_floor_plan"
+floorplan_output_folder = r"assets/floor_plans/heatmap_layered_floor_plan"
 
 # HARDCODED: The raw floor plan we are using as a base
-floor_plan_path = r"assets\floor_plans\sample_floor_plan.png"
+floor_plan_path = r"assets/floor_plans/sample_floor_plan.png"
 
 # We open a python window that will playback the video with the overlay
 win_name = "Phygital Person Scanner"
@@ -72,9 +73,20 @@ while cap.isOpened():
     frame_count += 1
     
     if frame_count % stride == 0:
-        # TASK 1: Process standard store heatmap (the .plot_im version)
+        # TASK 1: Process heatmap with Ultralytics on the floor plan background
+        # First, run detection on the actual video frame to get tracking data
         heatmap_results = heatmap_obj.process(frame)
-        final_store_heatmap = heatmap_results.plot_im # Store the image of the actual store with heat
+        
+        # Extract the heatmap overlay from the result
+        # We'll recreate this on the floor plan instead of the video frame
+        heatmap_only = heatmap_results.plot_im
+        
+        # Create a copy of the floor plan for the store heatmap
+        floor_plan_copy = floor_plan.copy()
+        
+        # Overlay the Ultralytics heatmap on the floor plan
+        # The heatmap_only contains the visualization, we blend it with floor plan
+        final_store_heatmap = cv2.addWeighted(floor_plan_copy, 0.5, heatmap_only, 0.5, 0)
 
         # TASK 2: Track people to draw heat on the invisible floor plan layer
         track_results = model.track(frame, persist=True, classes=[0], verbose=False, vid_stride=stride)
@@ -113,6 +125,127 @@ if final_floorplan_heatmap is not None:
     fp_save_path = os.path.join(floorplan_output_folder, f"floorplan_heat_{timestamp}.png")
     cv2.imwrite(fp_save_path, final_floorplan_heatmap)
     print(f"Floor Plan Heatmap saved: {fp_save_path}")
+
+# --- EXTRACT HIGH TRAFFIC AREAS FROM STORE HEATMAP ---
+if final_store_heatmap is not None:
+    # Convert the heatmap to HSV to isolate red/yellow hot areas
+    # The JET colormap: blue (cold) -> cyan -> green -> yellow -> red (hot)
+    hsv_heatmap = cv2.cvtColor(final_store_heatmap, cv2.COLOR_BGR2HSV)
+    
+    # Create mask for red areas (high traffic)
+    # Red wraps around in HSV: 0-10 and 170-180
+    lower_red1 = np.array([0, 100, 100])
+    upper_red1 = np.array([10, 255, 255])
+    lower_red2 = np.array([170, 100, 100])
+    upper_red2 = np.array([180, 255, 255])
+    
+    # Yellow/orange areas (medium-high traffic)
+    lower_yellow = np.array([15, 100, 100])
+    upper_yellow = np.array([35, 255, 255])
+    
+    # Combine masks
+    mask_red1 = cv2.inRange(hsv_heatmap, lower_red1, upper_red1)
+    mask_red2 = cv2.inRange(hsv_heatmap, lower_red2, upper_red2)
+    mask_yellow = cv2.inRange(hsv_heatmap, lower_yellow, upper_yellow)
+    
+    # Combine all high-traffic masks (red + yellow)
+    binary_mask = cv2.bitwise_or(mask_red1, mask_red2)
+    binary_mask = cv2.bitwise_or(binary_mask, mask_yellow)
+    
+    # Apply morphological operations to clean up the mask
+    kernel = np.ones((5, 5), np.uint8)
+    binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, kernel)
+    binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_OPEN, kernel)
+    
+    # Find contours of high traffic regions
+    contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # Extract data for each high traffic region
+    high_traffic_areas = []
+    for idx, contour in enumerate(contours):
+        # Filter out very small regions (noise)
+        area = cv2.contourArea(contour)
+        if area < 500:  # Minimum area threshold in pixels (increased from 100)
+            continue
+        
+        # Get bounding box
+        x, y, w_box, h_box = cv2.boundingRect(contour)
+        
+        # Calculate center point
+        M = cv2.moments(contour)
+        if M["m00"] != 0:
+            cx = int(M["m10"] / M["m00"])
+            cy = int(M["m01"] / M["m00"])
+        else:
+            cx, cy = x + w_box // 2, y + h_box // 2
+        
+        # Calculate intensity metrics from the value channel (brightness)
+        mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.drawContours(mask, [contour], 0, 255, -1)
+        
+        # Get average color in HSV to determine heat level
+        region_hsv = cv2.mean(hsv_heatmap, mask=mask)
+        heat_intensity = region_hsv[2]  # V channel (brightness/value)
+        
+        # Determine heat category based on hue
+        avg_hue = region_hsv[0]
+        if avg_hue <= 10 or avg_hue >= 170:
+            heat_category = "very_high"  # Red
+        elif 15 <= avg_hue <= 35:
+            heat_category = "high"  # Yellow/Orange
+        else:
+            heat_category = "medium"  # Other
+        
+        # Store region data
+        region_data = {
+            "id": idx + 1,
+            "center": {"x": int(cx), "y": int(cy)},
+            "bounding_box": {
+                "x": int(x),
+                "y": int(y),
+                "width": int(w_box),
+                "height": int(h_box)
+            },
+            "area_pixels": int(area),
+            "heat_intensity": float(heat_intensity),
+            "heat_category": heat_category,
+            "contour_points": contour.reshape(-1, 2).tolist()[:50]  # Limit points for JSON size
+        }
+        high_traffic_areas.append(region_data)
+    
+    # Sort by heat intensity (highest first)
+    high_traffic_areas.sort(key=lambda x: x["heat_intensity"], reverse=True)
+    
+    # Create JSON output
+    json_output = {
+        "metadata": {
+            "timestamp": timestamp,
+            "video_dimensions": {"width": w, "height": h},
+            "total_frames_processed": frame_count,
+            "detection_method": "hsv_colormap_analysis",
+            "total_high_traffic_regions": len(high_traffic_areas)
+        },
+        "high_traffic_areas": high_traffic_areas
+    }
+    
+    # Save to JSON file
+    json_output_path = os.path.join(floorplan_output_folder, f"high_traffic_data_{timestamp}.json")
+    with open(json_output_path, 'w') as f:
+        json.dump(json_output, f, indent=2)
+    
+    print(f"\n{'='*60}")
+    print(f"High Traffic Analysis Complete!")
+    print(f"{'='*60}")
+    print(f"Found {len(high_traffic_areas)} high-traffic regions")
+    print(f"Data saved to: {json_output_path}")
+    if high_traffic_areas:
+        print(f"\nTop 5 highest traffic areas:")
+        for i, area in enumerate(high_traffic_areas[:5], 1):
+            print(f"  {i}. Center: ({area['center']['x']}, {area['center']['y']}), "
+                  f"Area: {area['area_pixels']}px, Heat: {area['heat_category']}")
+    print(f"{'='*60}\n")
+else:
+    print("Warning: No store heatmap available for traffic analysis")
 
 # end of the video: closes the window and releases the footage
 cap.release()
