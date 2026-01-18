@@ -18,7 +18,7 @@ model = YOLO("yolo11n.pt").to(device)
 if device == "cuda": model.half() 
 
 # Setting variables for paths to where to find our video of contention
-video_path = r"assets\test_video_footage2.mp4"
+video_path = r"assets\test_video_footage.mp4"
 
 # --- OUTPUT ADDRESSES ---
 # Address 1: Standard heatmap of the actual store video
