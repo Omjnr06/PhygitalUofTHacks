@@ -1,5 +1,3 @@
-# imports for our datetime, os permissions to create/save file, ultralytics for our AI models
-# we also use a cv2 import for computer vision to properly handle videos
 import cv2
 import torch
 import os
@@ -8,245 +6,151 @@ import numpy as np
 from datetime import datetime
 from ultralytics import YOLO, solutions
 
-# This checks if the cpu that this code is running on has an NVIDIA chip and to run it on the NVIDIA, if not then the device we are running it on should just be the CPU of the computer
+# --- SETUP DEVICES & MODELS ---
 device = "cuda" if torch.cuda.is_available() else "cpu"
-
-# Setting the model to YOLO11n, n stands for nano so we are running a full scale model on our computers
-# YOLO11 was chosen because initially we had the thought of using faces to track 
 model = YOLO("yolo11n.pt").to(device)
-
-# If running on an NVIDIA chip, cut the model in half so it runs way faster and the video playback is better
 if device == "cuda": model.half() 
 
-# Setting variables for paths to where to find our video of contention
-video_path = r"assets/test_video_footage.mp4"
+# --- PATHS ---
+# Make sure these match your actual filenames!
+video_path = r"assets\test_video_footage.mp4"
+floor_plan_path = r"assets\floor_plans\sample_floor_plan.png"
+zones_file = r"assets\zones.json"
 
-# --- OUTPUT ADDRESSES ---
-# Address 1: Standard heatmap of the actual store video
-store_output_folder = r"assets/processed_heatmaps"
+# Outputs
+analytics_output = r"assets\store_analytics.json"
+heatmap_image_output = r"assets\floor_plans\final_heatmap.png"
 
-# Address 2: Heatmap layered specifically on your floor plan
-floorplan_output_folder = r"assets/floor_plans/heatmap_layered_floor_plan"
-
-# HARDCODED: The raw floor plan we are using as a base
-floor_plan_path = r"assets/floor_plans/sample_floor_plan.png"
-
-# We open a python window that will playback the video with the overlay
-win_name = "Phygital Person Scanner"
-cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
-
-# Running the video from the path
-cap = cv2.VideoCapture(video_path)
-
-# Prepare floor plan and internal heat accumulation layer
-floor_plan = cv2.imread(floor_plan_path)
-w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-# Ensure floor plan matches video dimensions for 1:1 pixel mapping
-if floor_plan is not None:
-    floor_plan = cv2.resize(floor_plan, (w, h))
+# --- LOAD ZONES ---
+if os.path.exists(zones_file):
+    with open(zones_file, 'r') as f:
+        aisle_zones = json.load(f)
+    print(f"✅ Loaded {len(aisle_zones)} Aisles from zones.json")
 else:
-    print("Error: Could not find sample_floor_plan.png at the specified path.")
+    print("❌ Warning: zones.json not found. You must run define_zones.py first!")
+    aisle_zones = []
 
-heat_layer = np.zeros((h, w), dtype=np.float32)
+# --- VIDEO & FLOOR PLAN SETUP ---
+cap = cv2.VideoCapture(video_path)
+video_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+video_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-# we create a heatmap object from Ultralytics built in heatmap function using colormap and the model
-heatmap_obj = solutions.Heatmap(
-    model="yolo11n.pt",
-    colormap=cv2.COLORMAP_JET
-)
+floor_plan = cv2.imread(floor_plan_path)
+if floor_plan is None:
+    print(f"❌ Error: Could not find floor plan at {floor_plan_path}")
+    exit()
 
-final_store_heatmap = None
-final_floorplan_heatmap = None
+# Get floor plan dimensions
+h_fp, w_fp = floor_plan.shape[:2]
+
+# Create a blank layer to draw the heat on (Float32 allows smooth accumulation)
+heat_layer = np.zeros((h_fp, w_fp), dtype=np.float32)
+
+# --- TRACKING LOOP ---
+stride = 2 
 frame_count = 0
 
-# causes AI to run only on every 2nd frame
-stride = 2 
+print(f"Starting Scanner... (Video: {video_w}x{video_h} -> Plan: {w_fp}x{h_fp})")
 
-# Following while loop seperates the playback and heatmap generation
 while cap.isOpened():
     success, frame = cap.read()
-    if not success:
-        break
+    if not success: break
     
     frame_count += 1
-    
     if frame_count % stride == 0:
-        # TASK 1: Process heatmap with Ultralytics on the floor plan background
-        # First, run detection on the actual video frame to get tracking data
-        heatmap_results = heatmap_obj.process(frame)
-        
-        # Extract the heatmap overlay from the result
-        # We'll recreate this on the floor plan instead of the video frame
-        heatmap_only = heatmap_results.plot_im
-        
-        # Create a copy of the floor plan for the store heatmap
-        floor_plan_copy = floor_plan.copy()
-        
-        # Overlay the Ultralytics heatmap on the floor plan
-        # The heatmap_only contains the visualization, we blend it with floor plan
-        final_store_heatmap = cv2.addWeighted(floor_plan_copy, 0.5, heatmap_only, 0.5, 0)
-
-        # TASK 2: Track people to draw heat on the invisible floor plan layer
+        # Run YOLO Tracking
         track_results = model.track(frame, persist=True, classes=[0], verbose=False, vid_stride=stride)
         
         if track_results[0].boxes.id is not None:
-            for box in track_results[0].boxes.xyxy.cpu().numpy():
-                x1, y1, x2, y2 = box
-                cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
-                # Draw "heat" on our invisible layer
-                cv2.circle(heat_layer, (cx, cy), 20, 1, -1)
+            boxes = track_results[0].boxes.xyxy.cpu().numpy()
+            for box in boxes:
+                # 1. Find the person's feet in the video (x, y)
+                vid_x = (box[0] + box[2]) / 2
+                vid_y = box[3] 
+                
+                # 2. SIMPLE SCALING: Stretch video coordinate to floor plan size
+                # New_X = Old_X * (Target_Width / Source_Width)
+                fp_x = int(vid_x * (w_fp / video_w))
+                fp_y = int(vid_y * (h_fp / video_h))
 
-        # Generate the visual overlay for the Floor Plan export
-        heat_norm = cv2.normalize(heat_layer, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
-        heatmap_color = cv2.applyColorMap(heat_norm, cv2.COLORMAP_JET)
-        final_floorplan_heatmap = cv2.addWeighted(floor_plan, 0.6, heatmap_color, 0.4, 0)
+                # 3. Draw heat on the invisible floor plan layer
+                # Clamp values to make sure we don't draw off the edge
+                fp_x = max(0, min(fp_x, w_fp - 1))
+                fp_y = max(0, min(fp_y, h_fp - 1))
+                
+                cv2.circle(heat_layer, (fp_x, fp_y), 15, 1, -1)
 
-        # Show the playback (initial style with boxes)
+        # Show the video feed (Optional)
         annotated_frame = track_results[0].plot()
-        cv2.imshow(win_name, cv2.resize(annotated_frame, (1280, 720)))
+        cv2.imshow("Phygital Scanner", cv2.resize(annotated_frame, (1080, 720)))
 
-# End key if we need to stop the video playing
-    if cv2.waitKey(1) & 0xFF == ord("q"):
-        break
+    # Press 'q' to stop early and save results
+    if cv2.waitKey(1) & 0xFF == ord("q"): break
 
-# --- FINAL GENERATION OF BOTH IMAGES ---
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+# --- ANALYTICS GENERATION (NEW DENSITY LOGIC) ---
+print("\nProcessing Analytics...")
 
-# Save Output 1: The Store Heatmap
-if final_store_heatmap is not None:
-    store_save_path = os.path.join(store_output_folder, f"store_heat_{timestamp}.png")
-    cv2.imwrite(store_save_path, final_store_heatmap)
-    print(f"Store Heatmap saved: {store_save_path}")
+# 1. Normalize heat layer to standard 0-255 image range
+heat_norm = cv2.normalize(heat_layer, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
 
-# Save Output 2: The Floor Plan Heatmap
-if final_floorplan_heatmap is not None:
-    fp_save_path = os.path.join(floorplan_output_folder, f"floorplan_heat_{timestamp}.png")
-    cv2.imwrite(fp_save_path, final_floorplan_heatmap)
-    print(f"Floor Plan Heatmap saved: {fp_save_path}")
+# 2. Save the Visual Heatmap Image
+heatmap_color = cv2.applyColorMap(heat_norm, cv2.COLORMAP_JET)
+final_overlay = cv2.addWeighted(floor_plan, 0.6, heatmap_color, 0.4, 0)
+cv2.imwrite(heatmap_image_output, final_overlay)
+print(f"✅ Visual Heatmap saved to: {heatmap_image_output}")
 
-# --- EXTRACT HIGH TRAFFIC AREAS FROM STORE HEATMAP ---
-if final_store_heatmap is not None:
-    # Convert the heatmap to HSV to isolate red/yellow hot areas
-    # The JET colormap: blue (cold) -> cyan -> green -> yellow -> red (hot)
-    hsv_heatmap = cv2.cvtColor(final_store_heatmap, cv2.COLOR_BGR2HSV)
-    
-    # Create mask for red areas (high traffic)
-    # Red wraps around in HSV: 0-10 and 170-180
-    lower_red1 = np.array([0, 100, 100])
-    upper_red1 = np.array([10, 255, 255])
-    lower_red2 = np.array([170, 100, 100])
-    upper_red2 = np.array([180, 255, 255])
-    
-    # Yellow/orange areas (medium-high traffic)
-    lower_yellow = np.array([15, 100, 100])
-    upper_yellow = np.array([35, 255, 255])
-    
-    # Combine masks
-    mask_red1 = cv2.inRange(hsv_heatmap, lower_red1, upper_red1)
-    mask_red2 = cv2.inRange(hsv_heatmap, lower_red2, upper_red2)
-    mask_yellow = cv2.inRange(hsv_heatmap, lower_yellow, upper_yellow)
-    
-    # Combine all high-traffic masks (red + yellow)
-    binary_mask = cv2.bitwise_or(mask_red1, mask_red2)
-    binary_mask = cv2.bitwise_or(binary_mask, mask_yellow)
-    
-    # Apply morphological operations to clean up the mask
-    kernel = np.ones((5, 5), np.uint8)
-    binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_CLOSE, kernel)
-    binary_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_OPEN, kernel)
-    
-    # Find contours of high traffic regions
-    contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    # Extract data for each high traffic region
-    high_traffic_areas = []
-    for idx, contour in enumerate(contours):
-        # Filter out very small regions (noise)
-        area = cv2.contourArea(contour)
-        if area < 500:  # Minimum area threshold in pixels (increased from 100)
-            continue
-        
-        # Get bounding box
-        x, y, w_box, h_box = cv2.boundingRect(contour)
-        
-        # Calculate center point
-        M = cv2.moments(contour)
-        if M["m00"] != 0:
-            cx = int(M["m10"] / M["m00"])
-            cy = int(M["m01"] / M["m00"])
-        else:
-            cx, cy = x + w_box // 2, y + h_box // 2
-        
-        # Calculate intensity metrics from the value channel (brightness)
-        mask = np.zeros((h, w), dtype=np.uint8)
-        cv2.drawContours(mask, [contour], 0, 255, -1)
-        
-        # Get average color in HSV to determine heat level
-        region_hsv = cv2.mean(hsv_heatmap, mask=mask)
-        heat_intensity = region_hsv[2]  # V channel (brightness/value)
-        
-        # Determine heat category based on hue
-        avg_hue = region_hsv[0]
-        if avg_hue <= 10 or avg_hue >= 170:
-            heat_category = "very_high"  # Red
-        elif 15 <= avg_hue <= 35:
-            heat_category = "high"  # Yellow/Orange
-        else:
-            heat_category = "medium"  # Other
-        
-        # Store region data
-        region_data = {
-            "id": idx + 1,
-            "center": {"x": int(cx), "y": int(cy)},
-            "bounding_box": {
-                "x": int(x),
-                "y": int(y),
-                "width": int(w_box),
-                "height": int(h_box)
-            },
-            "area_pixels": int(area),
-            "heat_intensity": float(heat_intensity),
-            "heat_category": heat_category,
-            "contour_points": contour.reshape(-1, 2).tolist()[:50]  # Limit points for JSON size
-        }
-        high_traffic_areas.append(region_data)
-    
-    # Sort by heat intensity (highest first)
-    high_traffic_areas.sort(key=lambda x: x["heat_intensity"], reverse=True)
-    
-    # Create JSON output
-    json_output = {
-        "metadata": {
-            "timestamp": timestamp,
-            "video_dimensions": {"width": w, "height": h},
-            "total_frames_processed": frame_count,
-            "detection_method": "hsv_colormap_analysis",
-            "total_high_traffic_regions": len(high_traffic_areas)
-        },
-        "high_traffic_areas": high_traffic_areas
-    }
-    
-    # Save to JSON file
-    json_output_path = os.path.join(floorplan_output_folder, f"high_traffic_data_{timestamp}.json")
-    with open(json_output_path, 'w') as f:
-        json.dump(json_output, f, indent=2)
-    
-    print(f"\n{'='*60}")
-    print(f"High Traffic Analysis Complete!")
-    print(f"{'='*60}")
-    print(f"Found {len(high_traffic_areas)} high-traffic regions")
-    print(f"Data saved to: {json_output_path}")
-    if high_traffic_areas:
-        print(f"\nTop 5 highest traffic areas:")
-        for i, area in enumerate(high_traffic_areas[:5], 1):
-            print(f"  {i}. Center: ({area['center']['x']}, {area['center']['y']}), "
-                  f"Area: {area['area_pixels']}px, Heat: {area['heat_category']}")
-    print(f"{'='*60}\n")
-else:
-    print("Warning: No store heatmap available for traffic analysis")
+# 3. Generate JSON Data for ChatGPT
+final_data = {
+    "timestamp": datetime.now().isoformat(),
+    "store_name": "Phygital Demo Store",
+    "total_aisles_tracked": len(aisle_zones),
+    "aisle_analysis": []
+}
 
-# end of the video: closes the window and releases the footage
+for zone in aisle_zones:
+    # Create a mask for just this aisle's box
+    mask = np.zeros_like(heat_norm)
+    pts = np.array(zone['coordinates'], np.int32)
+    cv2.fillPoly(mask, [pts], 255)
+    
+    # Calculate Total Area of the Aisle (in pixels)
+    total_area_pixels = cv2.countNonZero(mask)
+    
+    # Extract heat ONLY within this aisle
+    zone_heat = cv2.bitwise_and(heat_norm, heat_norm, mask=mask)
+    
+    # --- DENSITY CALCULATION ---
+    if total_area_pixels > 0:
+        total_heat_score = np.sum(zone_heat)
+        # Average heat across the WHOLE aisle (including empty space)
+        traffic_density = total_heat_score / total_area_pixels
+        
+        # Calculate coverage (how much of the floor was actually walked on)
+        active_pixels = cv2.countNonZero(zone_heat)
+        coverage_percent = (active_pixels / total_area_pixels) * 100
+    else:
+        traffic_density = 0
+        coverage_percent = 0
+        
+    # --- THRESHOLDS ---
+    # Adjusted for density scoring (lower numbers are normal now)
+    if traffic_density > 25: label = "HIGH_TRAFFIC"
+    elif traffic_density > 5: label = "MEDIUM_TRAFFIC"
+    else: label = "LOW_TRAFFIC"
+    
+    final_data["aisle_analysis"].append({
+        "aisle_id": zone['id'],
+        "product_category": zone['product'],
+        "traffic_label": label,
+        "density_score": round(float(traffic_density), 2),
+        "floor_coverage": f"{round(coverage_percent, 1)}%"
+    })
+
+# 4. Save JSON
+with open(analytics_output, 'w') as f:
+    json.dump(final_data, f, indent=4)
+
+print(f"✅ ChatGPT Data saved to: {analytics_output}")
+
 cap.release()
 cv2.destroyAllWindows()

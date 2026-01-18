@@ -1,0 +1,56 @@
+{
+    "timestamp": "2026-01-18T00:18:16.881956",
+    "store_name": "Phygital Demo Store",
+    "total_aisles_tracked": 7,
+    "aisle_analysis": [
+        {
+            "aisle_id": 1,
+            "product_category": "Cereals",
+            "traffic_label": "MEDIUM_TRAFFIC",
+            "density_score": 10.86,
+            "floor_coverage": "4.3%"
+        },
+        {
+            "aisle_id": 2,
+            "product_category": "Snacks",
+            "traffic_label": "LOW_TRAFFIC",
+            "density_score": 0.0,
+            "floor_coverage": "0.0%"
+        },
+        {
+            "aisle_id": 3,
+            "product_category": "International Foods",
+            "traffic_label": "MEDIUM_TRAFFIC",
+            "density_score": 8.06,
+            "floor_coverage": "3.2%"
+        },
+        {
+            "aisle_id": 4,
+            "product_category": "Sauces and Condiments",
+            "traffic_label": "MEDIUM_TRAFFIC",
+            "density_score": 9.36,
+            "floor_coverage": "3.7%"
+        },
+        {
+            "aisle_id": 5,
+            "product_category": "Grain Products",
+            "traffic_label": "LOW_TRAFFIC",
+            "density_score": 0.0,
+            "floor_coverage": "0.0%"
+        },
+        {
+            "aisle_id": 6,
+            "product_category": "Kitchen Items",
+            "traffic_label": "MEDIUM_TRAFFIC",
+            "density_score": 5.66,
+            "floor_coverage": "2.2%"
+        },
+        {
+            "aisle_id": 7,
+            "product_category": "Cleaning Itenms",
+            "traffic_label": "MEDIUM_TRAFFIC",
+            "density_score": 12.74,
+            "floor_coverage": "5.0%"
+        }
+    ]
+}
