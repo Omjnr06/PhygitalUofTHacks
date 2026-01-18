@@ -1,46 +1,52 @@
 import cv2
 import torch
-from ultralytics import YOLO
-from ultralytics.solutions import heatmap
+import os
+from datetime import datetime
+from ultralytics import YOLO, solutions
 
+# 1. Setup
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model = YOLO("yolo11n.pt").to(device)
-
 video_path = r"assets\test_video_footage.mp4"
+output_folder = r"assets\processed_heatmaps"
+
 cap = cv2.VideoCapture(video_path)
 
-width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-heatmap_obj = heatmap.Heatmap(
-    colormap=cv2.COLORMAP_JET,
-    view_img=False,
-    shape=(height, width),
-    names=model.names,
+# 2. Heatmap Init
+heatmap_obj = solutions.Heatmap(
+    model="yolo11n.pt",
+    colormap=cv2.COLORMAP_JET
 )
 
-final_frame = None
+final_heatmap_img = None
 
 while cap.isOpened():
     success, frame = cap.read()
     if not success:
         break
 
-    input_frame = cv2.resize(frame, (640, 640))
-    results = model.track(input_frame, persist=True, classes=[0], verbose=False)
+    # --- STEP 1: Standard Video Playback (Boxes) ---
+    # We run tracking and use .plot() to get the regular "initial style" boxes
+    track_results = model.track(frame, persist=True, classes=[0], verbose=False)
+    annotated_frame = track_results[0].plot() # This has the boxes/IDs
 
-    frame = heatmap_obj.generate_heatmap(frame, tracks=results)
-    final_frame = frame # Update the reference for the final export
+    # --- STEP 2: Background Heatmap (Invisible) ---
+    # We pass the frame to the heatmap tool but we DON'T show this version yet
+    heatmap_results = heatmap_obj.process(frame)
+    final_heatmap_img = heatmap_results.plot_im # Store the heatmap state
 
-    cv2.imshow("Heatmap", cv2.resize(frame, (1280, 720)))
+    # --- STEP 3: Display the "Normal" Style ---
+    cv2.imshow("Tracking View (Initial Style)", cv2.resize(annotated_frame, (1280, 720)))
 
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
 
-# Export the last state of the heatmap
-if final_frame is not None:
-    cv2.imwrite("heatmap_output.png", final_frame)
-    print("Heatmap saved as heatmap_output.png")
+# --- STEP 4: Save the Final Heatmap Photo ---
+if final_heatmap_img is not None:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    save_path = os.path.join(output_folder, f"heatmap_{timestamp}.png")
+    cv2.imwrite(save_path, final_heatmap_img)
+    print(f"Heatmap photo saved to: {save_path}")
 
 cap.release()
 cv2.destroyAllWindows()
