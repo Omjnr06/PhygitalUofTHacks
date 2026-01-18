@@ -22,3 +22,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+
+#API Keys Ignoring
+.env
+backend/.env
+__pycache__/
