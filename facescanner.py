@@ -40,6 +40,7 @@ frame_count = 0
 # causes AI to run only on every 2nd frame
 stride = 2 
 
+# Following while loop seperates the playback and heatmap generation (had an issue of the heatmap generating on the playback)
 while cap.isOpened():
     success, frame = cap.read()
     if not success:
@@ -57,14 +58,17 @@ while cap.isOpened():
         
         cv2.imshow(win_name, cv2.resize(annotated_frame, (1280, 720)))
 
+# End key if we need to stop the video playing
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
 
+# Generation of the heat map image
 if final_heatmap_img is not None:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     save_path = os.path.join(output_folder, f"heatmap_{timestamp}.png")
     cv2.imwrite(save_path, final_heatmap_img)
     print(f"Final Heatmap saved to: {save_path}")
 
+# end of the video: closes the window and releases the footage
 cap.release()
 cv2.destroyAllWindows()
